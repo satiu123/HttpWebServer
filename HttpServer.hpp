@@ -1,12 +1,11 @@
 #pragma once
 #include "HttpParser.hpp"
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <unistd.h>
 #include <unordered_map>
 #include <sstream>
-
-#include "NetworkOperation.hpp"
 
 class HttpServer {
 public:
@@ -107,20 +106,59 @@ public:
         std::unordered_map<std::string, std::string> headers;
         std::string responseBody;
         
+        // 添加写入状态追踪
+        std::string responseText;
+        size_t bytesSent = 0;
+        bool writePending = false;
+        
     public:
         HttpResponse() : version("HTTP/1.1"), statusCode("200"), statusMessage("OK") {
             headers["Server"] = "C++ HttpServer";
             headers["Content-Type"] = "text/html; charset=UTF-8";
             headers["Connection"] = "keep-alive";
         }
-        void writeResponse(int clientFd) {
-            std::string response = toString();
-            NetworkOperation::execute(
-                write(clientFd, response.data(), response.size()),
-                "write"
-            );
+        // 非阻塞写入方法
+        bool writeResponse(int clientFd) {
+            // 首次调用时，生成响应文本
+            if (!writePending) {
+                responseText = toString();
+                bytesSent = 0;
+                writePending = true;
+            }
             
+            // 继续发送剩余数据
+            while (bytesSent < responseText.size()) {
+                ssize_t sent = write(clientFd, responseText.data() + bytesSent, 
+                                    responseText.size() - bytesSent);
+                                    
+                if (sent > 0) {
+                    bytesSent += sent;
+                } else if (sent == -1) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // 写缓冲区已满，需要等待下一次EPOLLOUT事件
+                        return false;
+                    } else {
+                        // 发生错误
+                        throw std::runtime_error("write error: " + std::string(strerror(errno)));
+                    }
+                }
+            }
+            
+            // 全部数据已发送
+            writePending = false;
+            return true;
         }
+        // 重置写入状态
+        void resetWriteState() {
+            bytesSent = 0;
+            writePending = false;
+        }
+        
+        // 查询写入是否完成
+        bool isWriteComplete() const {
+            return !writePending || bytesSent >= responseText.size();
+        }
+        
         void setStatus(const std::string& code, const std::string& message) {
             statusCode = code;
             statusMessage = message;
