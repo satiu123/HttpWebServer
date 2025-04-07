@@ -70,7 +70,10 @@ SocketWrapper initializeServer(const char* host, const char* port) {
         listen(sock.get(), SOMAXCONN),
         "listen"
     );
-    
+    int reuseaddr = 1;
+    if (setsockopt(sock.get(), SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) {
+        throw std::runtime_error("setsockopt failed");
+    }
     return sock;
 }
 
@@ -86,6 +89,36 @@ void closeConnection(int fd,int epollFd) {
 }
 
 // 接受新连接
+// void acceptConnection(int serverFd, int epollFd) {
+//     SocketAddressStorage clientAddr;
+    
+//     int clientFd = accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
+//     if (clientFd == -1) {
+//         if (errno != EAGAIN && errno != EWOULDBLOCK) {
+//             fmt::print("accept failed: {}\n", strerror(errno));
+//         }
+//         return;
+//     }
+    
+//     // 设置为非阻塞
+//     setNonBlocking(clientFd);
+    
+//     // 创建新连接对象
+//     auto conn = std::make_shared<Connection>(clientFd);
+//     connections[clientFd] = conn;
+    
+//     // 添加到 epoll
+//     struct epoll_event ev;
+//     ev.events = EPOLLIN | EPOLLET; // 边缘触发
+//     ev.data.fd = clientFd;
+//     if (epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev) == -1) {
+//         throw std::runtime_error("epoll_ctl: add client socket");
+//     }
+    
+//     fmt::print("新连接: {}\n", clientFd);
+// }
+// 修改事件循环部分
+// 接受新连接
 void acceptConnection(int serverFd, int epollFd) {
     SocketAddressStorage clientAddr;
     
@@ -100,101 +133,15 @@ void acceptConnection(int serverFd, int epollFd) {
     // 设置为非阻塞
     setNonBlocking(clientFd);
     
-    // 创建新连接对象
+    // 创建新连接并添加到管理器
     auto conn = std::make_shared<Connection>(clientFd);
-    connections[clientFd] = conn;
-    
-    // 添加到 epoll
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET; // 边缘触发
-    ev.data.fd = clientFd;
-    if (epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev) == -1) {
-        throw std::runtime_error("epoll_ctl: add client socket");
-    }
+    ConnectionManager::getInstance().addConnection(conn);
     
     fmt::print("新连接: {}\n", clientFd);
+    
+    // 启动协程处理连接
+    conn->task=conn->startHandleConnection(epollFd);
 }
-
-// 处理读取事件
-void handleRead(int fd, int epollFd) {
-    auto it = connections.find(fd);
-    if (it == connections.end()) return;
-    
-    auto& conn = it->second;
-    
-    while (true) {
-        // 读取数据
-        ssize_t n = read(fd, conn->buffer.data(), conn->buffer.size());
-        
-        if (n == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // 没有更多数据可读
-                break;
-            } else {
-                // 错误发生
-                closeConnection(fd,epollFd);
-                return;
-            }
-        } else if (n == 0) {
-            // 连接关闭
-            closeConnection(fd,epollFd);
-            return;
-        }
-        
-        // 处理接收到的数据
-        conn->request.parseRequest(std::string_view(conn->buffer.data(), n));
-        
-        if (conn->request.isComplete()) {
-            // 请求处理完成，准备响应
-            conn->response.setStatus("200", "OK");
-            conn->response.setBody(conn->request.body());
-            conn->response.setHeader("Content-Length", std::to_string(conn->response.bodyLength()));
-            
-            // 修改事件为可写
-            struct epoll_event ev;
-            ev.events = EPOLLOUT | EPOLLET;
-            ev.data.fd = fd;
-            epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &ev);
-            
-            fmt::print("请求已处理: {}\n", fd);
-            break;
-        }
-    }
-}
-
-// 处理写入事件
-void handleWrite(int fd, int epollFd) {
-    auto it = connections.find(fd);
-    if (it == connections.end()) return;
-    
-    auto& conn = it->second;
-    
-    try {
-        // 发送响应，如果返回false表示写入未完成
-        bool writeComplete = conn->response.writeResponse(fd);
-        
-        if (!writeComplete) {
-            // 写入未完成，继续等待EPOLLOUT事件
-            return;
-        }
-        
-        fmt::print("响应已发送: {}\n", fd);
-        
-        // 响应发送完成后，重置连接状态，准备接收新请求
-        conn->request = HttpServer::HttpRequest();
-        conn->response = HttpServer::HttpResponse();
-        
-        // 修改回读事件
-        struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET;
-        ev.data.fd = fd;
-        epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &ev);
-    } catch (const std::exception& e) {
-        fmt::print("写入错误: {}\n", e.what());
-        closeConnection(fd,epollFd);
-    }
-}
-
 //事件循环
 void eventLoop(int serverFd, int epollFd) {
     const int MAX_EVENTS = 64;
@@ -214,21 +161,49 @@ void eventLoop(int serverFd, int epollFd) {
             if (fd == serverFd) {
                 acceptConnection(serverFd, epollFd);
             }
-            // 否则处理客户端连接事件
-            else {
-                if (events[i].events & EPOLLIN) {
-                    handleRead(fd, epollFd);
-                }
-                if (events[i].events & EPOLLOUT) {
-                    handleWrite(fd, epollFd);
-                }
-                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                    closeConnection(fd,epollFd);
-                }
+            // 如果是协程恢复
+            else if (events[i].data.ptr != nullptr) {
+                // 恢复协程
+                std::coroutine_handle<>::from_address(events[i].data.ptr).resume();
             }
         }
     }
 }
+
+// //事件循环
+// void eventLoop(int serverFd, int epollFd) {
+//     const int MAX_EVENTS = 64;
+//     struct epoll_event events[MAX_EVENTS];
+    
+//     while (true) {
+//         int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
+//         if (nfds == -1) {
+//             if (errno == EINTR) continue;
+//             throw std::runtime_error("epoll_wait failed");
+//         }
+        
+//         for (int i = 0; i < nfds; ++i) {
+//             int fd = events[i].data.fd;
+            
+//             // 如果是服务器套接字，接受新连接
+//             if (fd == serverFd) {
+//                 acceptConnection(serverFd, epollFd);
+//             }
+//             // 否则处理客户端连接事件
+//             else {
+//                 if (events[i].events & EPOLLIN) {
+//                     handleRead(fd, epollFd);
+//                 }
+//                 if (events[i].events & EPOLLOUT) {
+//                     handleWrite(fd, epollFd);
+//                 }
+//                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+//                     closeConnection(fd,epollFd);
+//                 }
+//             }
+//         }
+//     }
+// }
 
 int main() {
     try {

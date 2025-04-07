@@ -1,5 +1,7 @@
 #pragma once
+#include "AsyncIO.hpp"
 #include "HttpParser.hpp"
+#include "Task.hpp"
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -117,6 +119,9 @@ public:
             headers["Content-Type"] = "text/html; charset=UTF-8";
             headers["Connection"] = "keep-alive";
         }
+        bool isWritePending() const {
+            return writePending;
+        }
         // 非阻塞写入方法
         bool writeResponse(int clientFd) {
             // 首次调用时，生成响应文本
@@ -147,6 +152,36 @@ public:
             // 全部数据已发送
             writePending = false;
             return true;
+        }
+        void writeResponseCoro(int clientFd,int epollFd){
+        // 首次调用时，生成响应文本
+            if (!writePending) {
+                responseText = toString();
+                bytesSent = 0;
+                writePending = true;
+            }
+            
+            // 继续发送剩余数据
+            while (bytesSent < responseText.size()) {
+                ssize_t sent = write(clientFd, responseText.data() + bytesSent, 
+                                    responseText.size() - bytesSent);
+                                    
+                if (sent > 0) {
+                    bytesSent += sent;
+                } else if (sent == -1) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // 写缓冲区已满，等待下一次EPOLLOUT事件
+                        // co_await WriteAwaiter(clientFd, epollFd);
+                        return;
+                    } else {
+                        // 发生错误
+                        throw std::runtime_error("write error: " + std::string(strerror(errno)));
+                    }
+                }
+            }
+            
+            // 全部数据已发送
+            writePending = false;
         }
         // 重置写入状态
         void resetWriteState() {
