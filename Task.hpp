@@ -28,7 +28,7 @@ public:
     };
     
     Task(std::coroutine_handle<promise_type> h) : handle(h) {}
-    
+    Task(std::nullptr_t) : handle(nullptr) {}
     // 移动构造函数，避免复制
     Task(Task&& other) noexcept : handle(other.handle) {
         other.handle = nullptr;
@@ -50,7 +50,7 @@ public:
     
     ~Task() {
         if (handle) {
-            fmt::print("销毁协程\n");
+            // fmt::print("销毁协程\n");
             handle.destroy();
         }
     }

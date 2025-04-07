@@ -1,6 +1,5 @@
 #pragma once
 #include <cstddef>
-#include <functional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -87,6 +86,14 @@ public:
     bool isComplete() const {
         return headerIsFinished && body.size() >= contentLength;
     }
+    void reset() {
+        header.clear();
+        headline.clear();
+        headerMap.clear();
+        body.clear();
+        contentLength = 0;
+        headerIsFinished = false;
+    }
 };
 
 class RequestParser : public HttpParser {
@@ -114,6 +121,12 @@ public:
     std::string version() const {
         return _version;
     }
+    void reset() {
+        HttpParser::reset();
+        _method.clear();
+        _url.clear();
+        _version.clear();
+    }
 };
 
 class ResponseParser : public HttpParser {
@@ -132,14 +145,8 @@ public:
     std::string statusCode() const {
         return _statusCode;
     }
-};
-class HttpResponseWriter {
-public:
-    void writeResponse(std::string_view statusCode,std::string_view content,std::string_view contentType){
-
-
-    }
-    void writeResponse(std::string_view key, std::string_view value) {
-        
+    void clear() {
+        HttpParser::reset();
+        _statusCode.clear();
     }
 };

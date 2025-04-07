@@ -8,16 +8,18 @@
 #include <memory>
 #include <cerrno>
 
-
-#include "HttpServer.hpp"
+#include "AsyncIO.hpp"
 #include "NetworkOperation.hpp"
 #include "AddrInfoWrapper.hpp"
 #include "SocketWrapper.hpp"
-#include "SocketAddressStorage.hpp"
 #include "Connection.hpp"
 
 // 存储所有活动连接
 std::unordered_map<int, std::shared_ptr<Connection>> connections;
+
+// 初始化连接协程
+Task g_acceptTask=nullptr;
+
 
 // 设置非阻塞套接字
 void setNonBlocking(int fd) {
@@ -58,7 +60,10 @@ SocketWrapper initializeServer(const char* host, const char* port) {
         addrInfo.get()->ai_protocol
     );
     fmt::print("Socket created with fd: {}\n", sock.get());
-    
+    int reuseaddr = 1;
+    if (setsockopt(sock.get(), SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) {
+        throw std::runtime_error("setsockopt failed");
+    }
     // 绑定
     NetworkOperation::execute(
         bind(sock.get(), addrInfo.get()->ai_addr, addrInfo.get()->ai_addrlen),
@@ -70,10 +75,7 @@ SocketWrapper initializeServer(const char* host, const char* port) {
         listen(sock.get(), SOMAXCONN),
         "listen"
     );
-    int reuseaddr = 1;
-    if (setsockopt(sock.get(), SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) {
-        throw std::runtime_error("setsockopt failed");
-    }
+    fmt::print("Socket bound and listening on {}:{}\n", host, port);
     return sock;
 }
 
@@ -89,64 +91,36 @@ void closeConnection(int fd,int epollFd) {
 }
 
 // 接受新连接
-// void acceptConnection(int serverFd, int epollFd) {
-//     SocketAddressStorage clientAddr;
-    
-//     int clientFd = accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
-//     if (clientFd == -1) {
-//         if (errno != EAGAIN && errno != EWOULDBLOCK) {
-//             fmt::print("accept failed: {}\n", strerror(errno));
-//         }
-//         return;
-//     }
-    
-//     // 设置为非阻塞
-//     setNonBlocking(clientFd);
-    
-//     // 创建新连接对象
-//     auto conn = std::make_shared<Connection>(clientFd);
-//     connections[clientFd] = conn;
-    
-//     // 添加到 epoll
-//     struct epoll_event ev;
-//     ev.events = EPOLLIN | EPOLLET; // 边缘触发
-//     ev.data.fd = clientFd;
-//     if (epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev) == -1) {
-//         throw std::runtime_error("epoll_ctl: add client socket");
-//     }
-    
-//     fmt::print("新连接: {}\n", clientFd);
-// }
-// 修改事件循环部分
-// 接受新连接
-void acceptConnection(int serverFd, int epollFd) {
-    SocketAddressStorage clientAddr;
-    
-    int clientFd = accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
-    if (clientFd == -1) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            fmt::print("accept failed: {}\n", strerror(errno));
+Task acceptConnection(int serverFd, int epollFd) {
+    while(true){
+        int clientFd = co_await AcceptAwaiter(serverFd, epollFd);
+        if (clientFd == -1) {
+            continue;
         }
-        return;
+        try{
+            // 设置为非阻塞
+            setNonBlocking(clientFd);
+            
+            // 创建新连接并添加到管理器
+            auto conn = std::make_shared<Connection>(clientFd);
+            ConnectionManager::getInstance().addConnection(conn);
+            
+            // fmt::print("新连接: {}\n", clientFd);
+            
+            // 启动协程处理连接
+            conn->startHandleConnection(epollFd);
+        }catch(const std::exception& e){
+            fmt::print("处理连接时发生错误: {}\n", e.what());
+            closeConnection(clientFd, epollFd);
+            // close(clientFd);
+        }
     }
-    
-    // 设置为非阻塞
-    setNonBlocking(clientFd);
-    
-    // 创建新连接并添加到管理器
-    auto conn = std::make_shared<Connection>(clientFd);
-    ConnectionManager::getInstance().addConnection(conn);
-    
-    fmt::print("新连接: {}\n", clientFd);
-    
-    // 启动协程处理连接
-    conn->task=conn->startHandleConnection(epollFd);
+    co_return;
 }
 //事件循环
 void eventLoop(int serverFd, int epollFd) {
     const int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
-    
     while (true) {
         int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
         if (nfds == -1) {
@@ -156,83 +130,41 @@ void eventLoop(int serverFd, int epollFd) {
         
         for (int i = 0; i < nfds; ++i) {
             int fd = events[i].data.fd;
-            
-            // 如果是服务器套接字，接受新连接
-            if (fd == serverFd) {
-                acceptConnection(serverFd, epollFd);
-            }
             // 如果是协程恢复
-            else if (events[i].data.ptr != nullptr) {
+            if (events[i].data.ptr != nullptr) {
                 // 恢复协程
                 std::coroutine_handle<>::from_address(events[i].data.ptr).resume();
             }
         }
     }
 }
-
-// //事件循环
-// void eventLoop(int serverFd, int epollFd) {
-//     const int MAX_EVENTS = 64;
-//     struct epoll_event events[MAX_EVENTS];
+void runServer() {
+    // 初始化服务器
+    SocketWrapper serverSocket = initializeServer("localhost", "8080");
+    setNonBlocking(serverSocket.get());
     
-//     while (true) {
-//         int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
-//         if (nfds == -1) {
-//             if (errno == EINTR) continue;
-//             throw std::runtime_error("epoll_wait failed");
-//         }
-        
-//         for (int i = 0; i < nfds; ++i) {
-//             int fd = events[i].data.fd;
-            
-//             // 如果是服务器套接字，接受新连接
-//             if (fd == serverFd) {
-//                 acceptConnection(serverFd, epollFd);
-//             }
-//             // 否则处理客户端连接事件
-//             else {
-//                 if (events[i].events & EPOLLIN) {
-//                     handleRead(fd, epollFd);
-//                 }
-//                 if (events[i].events & EPOLLOUT) {
-//                     handleWrite(fd, epollFd);
-//                 }
-//                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-//                     closeConnection(fd,epollFd);
-//                 }
-//             }
-//         }
-//     }
-// }
+    // 创建 epoll 实例
+    int epollFd = createEpoll();
+    
+    // 创建accept协程任务
+    g_acceptTask = acceptConnection(serverSocket.get(), epollFd);
+    
+    // 开始事件循环
+    eventLoop(serverSocket.get(), epollFd);
 
+    // 关闭服务器
+    close(epollFd);
+    close(serverSocket.get());
+}
 int main() {
     try {
         // 设置中文
         setlocale(LC_ALL, "zh_CN.UTF-8");
         
-        // 初始化服务器
-        SocketWrapper serverSocket = initializeServer("localhost", "8080");
-        setNonBlocking(serverSocket.get());
+        // 启动服务器
+        fmt::print("服务器正在启动...\n");
+        runServer();
         
-        // 创建 epoll 实例
-        int epollFd = createEpoll();
-        
-        // 注册服务器套接字
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = serverSocket.get();
-        if (epoll_ctl(epollFd, EPOLL_CTL_ADD, serverSocket.get(), &ev) == -1) {
-            throw std::runtime_error("epoll_ctl: server socket");
-        }
-        
-        fmt::print("服务器启动在 localhost:8080\n");
-        
-        // 开始事件循环
-        eventLoop(serverSocket.get(), epollFd);
-        
-        // 关闭服务器
-        close(epollFd);
-        close(serverSocket.get());
         
     } catch (const std::exception& e) {
         fmt::print("错误: {}\n", e.what());

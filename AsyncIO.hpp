@@ -1,4 +1,5 @@
 #pragma once
+#include "SocketAddressStorage.hpp"
 #include <coroutine>
 #include <fmt/format.h>
 #include <sys/epoll.h>
@@ -50,3 +51,52 @@ class WriteAwaiter : public IoAwaiter {
 public:
     WriteAwaiter(int fd, int epollFd) : IoAwaiter(fd, epollFd, EPOLLOUT | EPOLLET) {}
 };
+
+
+// 用于异步 accept 的 awaiter
+class AcceptAwaiter {
+private:
+    int serverFd;
+    int epollFd;
+
+public:
+    AcceptAwaiter(int serverFd, int epollFd) : serverFd(serverFd), epollFd(epollFd) {}
+
+    bool await_ready() const noexcept {
+        // 尝试非阻塞 accept，如果立即成功则返回 true
+        return false;
+    }
+
+        void await_suspend(std::coroutine_handle<> h) {
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLET;
+        ev.data.ptr = h.address();
+        
+        if (epoll_ctl(epollFd, EPOLL_CTL_ADD, serverFd, &ev) == -1) {
+            if (errno == EEXIST) {
+                // 如果文件描述符已存在，则修改它
+                if (epoll_ctl(epollFd, EPOLL_CTL_MOD, serverFd, &ev) == -1) {
+                    throw std::runtime_error(fmt::format("epoll_ctl MOD failed in AcceptAwaiter: {}", strerror(errno)));
+                }
+            } else {
+                // 真正的错误
+                throw std::runtime_error(fmt::format("epoll_ctl failed in AcceptAwaiter: {}", strerror(errno)));
+            }
+        }
+    }
+
+    int await_resume() {
+        SocketAddressStorage clientAddr;
+        
+        int clientFd = accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
+        if (clientFd == -1) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                throw std::runtime_error(fmt::format("accept failed: {}", strerror(errno)));
+            }
+            return -1;  // 没有新连接
+        }
+        
+        return clientFd;  // 返回新客户端连接的文件描述符
+    }
+};
+

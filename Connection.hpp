@@ -7,19 +7,19 @@
 #include <fmt/base.h>
 #include <unordered_map>
 #include <memory>
+#include <vector>
 
 // 连接类，表示一个HTTP连接
 class Connection {
 public:
     int fd;
-    // std::vector<char> buffer;  // 缓冲区
-    std::array<char, 4096> buffer;  // 使用std::array作为缓冲区
+    std::vector<char>buffer;  // 使用std::vector作为缓冲区
+    size_t writeOffset = 0; // 写入偏移量
     HttpServer::HttpRequest request;
     HttpServer::HttpResponse response;
     Task task;  // 协程任务
-    Task startHandleConnection(int epollFd) {
+    void startHandleConnection(int epollFd) {
         task = handleConnection(epollFd); // 存储协程任务
-        return std::move(task);
     }
     // 标记连接为关闭，供协程内部使用
     void markForDeletion(int epollFd) {
@@ -37,42 +37,28 @@ public:
     Task handleConnection(int epollFd) {
         try {
             while (true) { // 处理多个请求的循环
-                // 等待可读事件
-                co_await ReadAwaiter(fd, epollFd);
+                // 尝试无等待读取一次，可能请求已经完全到达
+                ssize_t n = read(fd, buffer.data(), buffer.size());
+                bool needWait = false;
                 
-                bool connectionClosed = false;
-                
-                // 读取和处理请求
-                while (true) {
-                    ssize_t n = read(fd, buffer.data(), buffer.size());
-                    
-                    if (n == -1) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            // 没有更多数据可读
-                            break;
-                        } else {
-                            // 错误发生
-                            connectionClosed = true;
-                            break;
-                        }
-                    } else if (n == 0) {
-                        // 连接关闭
-                        connectionClosed = true;
-                        break;
-                    }
-                
-                    // 处理接收到的数据
+                if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                // 真正需要等待
+                needWait = true;
+                } else if (n > 0) {
+                    // 处理读取的数据
                     request.parseRequest(std::string_view(buffer.data(), n));
-                    
-                    if (request.isComplete()) {
-                        break;
+                    if (!request.isComplete()) {
+                        needWait = true;
                     }
-                }
-                
-                if (connectionClosed) {
-                    // 连接已关闭，退出协程
-                   markForDeletion(epollFd);
+                } else {
+                    // 处理连接关闭或错误
+                    markForDeletion(epollFd);
                     co_return;
+                }
+            
+                // 只有真正需要等待时才挂起协程
+                if (needWait) {
+                    co_await ReadAwaiter(fd, epollFd);
                 }
                 
                 // 请求处理完成，准备响应
@@ -80,43 +66,28 @@ public:
                 response.setBody(request.body());
                 response.setHeader("Content-Length", std::to_string(response.bodyLength()));
 
-                // 等待可写事件
-                // 尝试写入响应
-                response.writeResponseCoro(fd, epollFd);
-                // 如果需要等待可写，则等待
-                if (response.isWritePending()) {
-                    co_await WriteAwaiter(fd, epollFd);
-                    // 继续写入，直到完成
-                    while (response.isWritePending()) {
-                        response.writeResponseCoro(fd, epollFd);
-                        if (response.isWritePending()) {
-                            co_await WriteAwaiter(fd, epollFd);
-                        }
-                    }
-                }
-                
-                fmt::print("响应已发送: {}\n", fd);
-                
+                // 写入响应
+                try {
+                    co_await HttpServer::HttpResponseAwaiter(response, fd, epollFd);
+                } catch (const std::exception& e) {
+                    // fmt::print("发送响应错误: {}\n", e.what());
+                    markForDeletion(epollFd);
+                    co_return ;
+                }                
                 // 响应发送完成后，重置连接状态，准备接收新请求
-                request = HttpServer::HttpRequest();
-                response = HttpServer::HttpResponse();
+                request.reset();
+                response.reset();
             }
         } catch (const std::exception& e) {
             fmt::print("连接处理错误: {}\n", e.what());
-            markForDeletion(epollFd);  // 处理异常情况，关闭连接
-            // 异常情况，协程结束
         }
-    co_return;
-    }
-    void close(int epollFd,std::unordered_map<int, std::shared_ptr<Connection>>& connections) {
-        connections.erase(fd);  // 从连接映射中删除
-        // 关闭连接
-        ::close(fd);
-        // 从epoll中删除fd
-        epoll_ctl(epollFd, EPOLL_CTL_DEL, fd, nullptr);
+        // 处理完所有请求后，关闭连接
+        markForDeletion(epollFd);
+        co_return;
     }
     explicit Connection(int fd) : fd(fd), task(nullptr) {
-        // buffer.resize(4096);  // 初始化缓冲区大小
+        buffer.resize(1024); // 初始化缓冲区大小
+        // fmt::print("新连接: {}\n", fd);
     }
     
     ~Connection() {
