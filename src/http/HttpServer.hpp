@@ -121,7 +121,7 @@ public:
         HttpResponse() : version("HTTP/1.1"), statusCode("200"), statusMessage("OK") {
             headers["Server"] = "C++ HttpServer";
             headers["Content-Type"] = "text/html; charset=UTF-8";
-            headers["Connection"] = "keep-alive";
+            // headers["Connection"] = "keep-alive";
         }
         void reset(){
             version = "HTTP/1.1";
