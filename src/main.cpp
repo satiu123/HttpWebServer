@@ -118,7 +118,7 @@ Task acceptConnection(int serverFd, int epollFd) {
     co_return;
 }
 //事件循环
-void eventLoop(int serverFd, int epollFd) {
+void eventLoop(int epollFd) {
     const int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
     while (true) {
@@ -129,7 +129,6 @@ void eventLoop(int serverFd, int epollFd) {
         }
         
         for (int i = 0; i < nfds; ++i) {
-            int fd = events[i].data.fd;
             // 如果是协程恢复
             if (events[i].data.ptr != nullptr) {
                 // 恢复协程
@@ -150,7 +149,7 @@ void runServer() {
     g_acceptTask = acceptConnection(serverSocket.get(), epollFd);
     
     // 开始事件循环
-    eventLoop(serverSocket.get(), epollFd);
+    eventLoop(epollFd);
 
     // 关闭服务器
     close(epollFd);

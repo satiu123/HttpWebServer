@@ -136,61 +136,11 @@ public:
         bool isWritePending() const {
             return writePending;
         }
-        // 非阻塞写入方法
-        bool writeResponse(int clientFd) {
-            // 首次调用时，生成响应文本
-            if (!writePending) {
-                responseText = toString();
-                bytesSent = 0;
-                writePending = true;
-            }
-            
-            // 继续发送剩余数据
-            while (bytesSent < responseText.size()) {
-                ssize_t sent = write(clientFd, responseText.data() + bytesSent, 
-                                    responseText.size() - bytesSent);
-                                    
-                if (sent > 0) {
-                    bytesSent += sent;
-                } else if (sent == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        // 写缓冲区已满，需要等待下一次EPOLLOUT事件
-                        return false;
-                    } else {
-                        // 发生错误
-                        throw std::runtime_error("write error: " + std::string(strerror(errno)));
-                    }
-                }
-            }
-            
-            // 全部数据已发送
-            writePending = false;
-            return true;
-        }
-        // 协程写入方法
+        // 初始化响应文本
         void init(){
             responseText = toString();
             bytesSent = 0;
             writePending = true;
-        }
-        void writeResponseCoro(int clientFd) {
-            // 尝试发送剩余数据
-            ssize_t sent = write(clientFd, responseText.data() + bytesSent, 
-                                responseText.size() - bytesSent);
-                                
-            if (sent > 0) {
-                bytesSent += sent;
-                // 检查是否全部发送完毕
-                if (bytesSent >= responseText.size()) {
-                    writePending = false;  // 标记为发送完成
-                }
-            } else if (sent == -1) {
-                if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    // 真正的错误
-                    throw std::runtime_error("write error: " + std::string(strerror(errno)));
-                }
-                // 对于EAGAIN,保持writePending状态,等待下一次调用
-            }
         }
         // 重置写入状态
         void resetWriteState() {
