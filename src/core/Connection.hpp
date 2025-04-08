@@ -1,9 +1,8 @@
 #pragma once
-#include "AsyncIO.hpp"
-#include "HttpServer.hpp"
+#include "../network/AsyncIO.hpp"
+#include "../http/HttpServer.hpp"
 #include "Task.hpp"
 #include "ConnectionManager.hpp"
-#include <array>
 #include <fmt/base.h>
 #include <unordered_map>
 #include <memory>
@@ -14,7 +13,6 @@ class Connection {
 public:
     int fd;
     std::vector<char>buffer;  // 使用std::vector作为缓冲区
-    size_t writeOffset = 0; // 写入偏移量
     HttpServer::HttpRequest request;
     HttpServer::HttpResponse response;
     Task task;  // 协程任务

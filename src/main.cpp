@@ -8,11 +8,11 @@
 #include <memory>
 #include <cerrno>
 
-#include "AsyncIO.hpp"
-#include "NetworkOperation.hpp"
-#include "AddrInfoWrapper.hpp"
-#include "SocketWrapper.hpp"
-#include "Connection.hpp"
+#include "network/AsyncIO.hpp"
+#include "network/NetworkOperation.hpp"
+#include "network/AddrInfoWrapper.hpp"
+#include "network/SocketWrapper.hpp"
+#include "core/Connection.hpp"
 
 // 存储所有活动连接
 std::unordered_map<int, std::shared_ptr<Connection>> connections;

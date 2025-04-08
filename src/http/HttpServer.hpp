@@ -1,15 +1,15 @@
 #pragma once
-#include "AsyncIO.hpp"
 #include "HttpParser.hpp"
-#include "Task.hpp"
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
 #include <unordered_map>
-#include <sstream>
 #include <netinet/tcp.h>
-#include <vector>
+#include <cerrno>
+#include <coroutine>
+#include <sys/epoll.h>
 
 class HttpServer {
 public:
@@ -173,7 +173,7 @@ public:
             bytesSent = 0;
             writePending = true;
         }
-        void writeResponseCoro(int clientFd, int epollFd) {
+        void writeResponseCoro(int clientFd) {
             // 尝试发送剩余数据
             ssize_t sent = write(clientFd, responseText.data() + bytesSent, 
                                 responseText.size() - bytesSent);
