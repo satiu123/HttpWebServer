@@ -139,7 +139,7 @@ void eventLoop(int epollFd) {
 }
 void runServer() {
     // 初始化服务器
-    SocketWrapper serverSocket = initializeServer("localhost", "8080");
+    SocketWrapper serverSocket = initializeServer("127.0.0.1", "8080");
     setNonBlocking(serverSocket.get());
     
     // 创建 epoll 实例

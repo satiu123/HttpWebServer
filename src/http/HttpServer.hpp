@@ -128,8 +128,8 @@ public:
             return parser.headerMap;
         }
         
-        std::string body() const {
-            return parser.body;
+        std::string&& body()  {
+            return std::move(parser.body);
         }
         
         std::string getParam(const std::string& key) const {
@@ -191,7 +191,7 @@ public:
             return !writePending || bytesSent >= responseText.size();
         }
         
-        void setStatus(const std::string& code, const std::string& message) {
+        void setStatus(const std::string_view code, const std::string_view message) {
             statusCode = code;
             statusMessage = message;
         }
@@ -200,8 +200,8 @@ public:
             headers[key] = value;
         }
         
-        void setBody(const std::string& body) {
-            responseBody = body;
+        void setBody(const std::string&& body) {
+            responseBody = std::move(body);
             headers["Content-Length"] = std::to_string(responseBody.length());
         }
         
@@ -235,43 +235,6 @@ public:
             
             return result;
         }
-        
-        // 常见状态码的便捷方法
-        void ok(const std::string& body = "", const std::string& contentType = "text/html; charset=UTF-8") {
-            setStatus("200", "OK");
-            setContentType(contentType);
-            setBody(body);
-        }
-        
-        void notFound(const std::string& body = "404 Not Found") {
-            setStatus("404", "Not Found");
-            setBody(body);
-        }
-        
-        void serverError(const std::string& body = "500 Internal Server Error") {
-            setStatus("500", "Internal Server Error");
-            setBody(body);
-        }
-        
-        void badRequest(const std::string& body = "400 Bad Request") {
-            setStatus("400", "Bad Request");
-            setBody(body);
-        }
-        
-        void redirect(const std::string& url, bool permanent = false) {
-            if (permanent) {
-                setStatus("301", "Moved Permanently");
-            } else {
-                setStatus("302", "Found");
-            }
-            setHeader("Location", url);
-            setBody("");
-        }
-        
-        void json(const std::string& jsonBody) {
-            setContentType("application/json; charset=UTF-8");
-            setBody(jsonBody);
-        }
     };
     class HttpRequestAwaiter {
     private:
@@ -292,7 +255,7 @@ public:
         void await_suspend(std::coroutine_handle<> handle) {
             // 注册epoll事件
             struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLET;
+            ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
             ev.data.ptr = handle.address();
             
             if (epoll_ctl(epollFd, EPOLL_CTL_MOD, clientFd, &ev) == -1) {
@@ -348,7 +311,7 @@ public:
         void await_suspend(std::coroutine_handle<> handle) {
             // 只有在需要等待时才注册epoll事件
             struct epoll_event ev;
-            ev.events = EPOLLOUT | EPOLLET;
+            ev.events = EPOLLOUT | EPOLLET | EPOLLONESHOT;
             ev.data.ptr = handle.address();
             
             if (epoll_ctl(epollFd, EPOLL_CTL_MOD, clientFd, &ev) == -1) {

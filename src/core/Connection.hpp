@@ -1,12 +1,10 @@
 #pragma once
-#include "../network/AsyncIO.hpp"
 #include "../http/HttpServer.hpp"
 #include "Task.hpp"
 #include "ConnectionManager.hpp"
 #include <fmt/base.h>
 #include <unordered_map>
 #include <memory>
-#include <vector>
 
 // 连接类，表示一个HTTP连接
 class Connection {

@@ -84,7 +84,7 @@ public:
 
     void await_suspend(std::coroutine_handle<> h) {
         struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLET;
+        ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
         ev.data.ptr = h.address();
         
         if (epoll_ctl(epollFd, EPOLL_CTL_ADD, serverFd, &ev) == -1) {

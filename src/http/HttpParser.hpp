@@ -25,14 +25,13 @@ public:
                 headerIsFinished = true;
                 // 分割请求头和请求体
                 // pos + 4 是为了跳过\r\n\r\n
-                header = std::string(request.substr(0, pos));
-                body = std::string(request.substr(pos + 4));
+                header = std::string_view(request.substr(0, pos));
+                body = std::string_view(request.substr(pos + 4));
                 headerIsFinished = true;
                 getContentLength();
             } else {
                 header += request;
             }
-        
         }else{
             // 解析请求体
             body += request;
