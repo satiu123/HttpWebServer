@@ -1,5 +1,6 @@
 #pragma once
 #include "HttpParser.hpp"
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -10,6 +11,7 @@
 #include <cerrno>
 #include <coroutine>
 #include <sys/epoll.h>
+#include <vector>
 
 class HttpServer {
 public:
@@ -48,9 +50,45 @@ public:
     public:
         HttpRequest() = default;
         ~HttpRequest() = default;
+        bool readComplete = false;
         void reset() {
             parser.reset();
             queryParams.clear();
+            readComplete = false;
+        }
+        // 新增读取方法，返回是否读取完成
+        bool read(int fd, std::vector<char>& buffer) {
+            if (readComplete) {
+                return true;
+            }
+            
+            ssize_t bytesRead = ::read(fd, buffer.data(), buffer.size());
+            
+            if (bytesRead > 0) {
+                // 解析请求
+                parseRequest(std::string_view(buffer.data(), bytesRead));
+                
+                // 如果请求解析完成
+                if (isComplete()) {
+                    readComplete = true;
+                    return true;
+                }
+                
+                // 需要继续读取
+                return false;
+            } else if (bytesRead == 0) {
+                // 连接关闭
+                throw std::runtime_error("Connection closed by peer");
+            } else if (bytesRead == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // 暂时没有数据可读
+                    return false;
+                } else {
+                    // 其他错误
+                    throw std::runtime_error("read error: " + std::string(strerror(errno)));
+                }
+            }
+            return false;
         }
         void parseRequest(std::string_view request) {
             parser.parse(request);
@@ -235,8 +273,55 @@ public:
             setBody(jsonBody);
         }
     };
+    class HttpRequestAwaiter {
+    private:
+        HttpRequest& request;
+        int clientFd;
+        int epollFd;
+        std::vector<char>buffer;
+    public:
+        HttpRequestAwaiter(HttpRequest& req, int clientFd, int epollFd)
+            : request(req), clientFd(clientFd), epollFd(epollFd){
+                buffer.resize(1024); // 初始化缓冲区大小
+            }
+        
+        bool await_ready() {
+            return request.read(clientFd, buffer);
+        }
+        
+        void await_suspend(std::coroutine_handle<> handle) {
+            // 注册epoll事件
+            struct epoll_event ev;
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.ptr = handle.address();
+            
+            if (epoll_ctl(epollFd, EPOLL_CTL_MOD, clientFd, &ev) == -1) {
+                if (errno == ENOENT) {
+                    // 如果事件不存在，则添加
+                    epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev);
+                } else {
+                    throw std::runtime_error("epoll_ctl error: " + std::string(strerror(errno)));
+                }
+            }
+        }
+        
+        void await_resume() {
+            // 继续处理请求
+            while(!request.isComplete()) {
+                try {
+                    if (request.read(clientFd, buffer)) {
+                        // 如果读取完成，退出循环
+                        break;
+                    }
+                } catch (const std::exception& e) {
+                    // 处理异常
+                    request.readComplete = false;
+                    throw; // 重新抛出异常
+                }
+            }         
+        }
+    };
     
-    // 优化后的HttpResponseAwaiter
     class HttpResponseAwaiter {
     private:
         HttpServer::HttpResponse& response;
@@ -277,56 +362,57 @@ public:
         }
         
         void await_resume() {
-            // epoll事件触发后，继续尝试写入
-            tryWrite();
+            //epoll事件触发后，继续尝试写入
+            while(!response.isWriteComplete()) {
+                try {
+                    if (tryWrite()) {
+                        // 如果写入完成，退出循环
+                        break;
+                    }
+                } catch (const std::exception& e) {
+                    // 处理异常
+                    response.writePending = false;
+                    throw; // 重新抛出异常
+                }
+            }
         }
         
     private:
         // 尝试写入响应，返回是否完成
         bool tryWrite() {
-            // 批量写入优化：尝试多次写入直到EAGAIN
-            while (response.isWritePending()) {
-                try {
-                    constexpr size_t MAX_WRITE_SIZE = 65536; // 64KB
-                    size_t remaining = response.responseText.size() - response.bytesSent;
-                    size_t toWrite = std::min(remaining, MAX_WRITE_SIZE);
-                    
-                    // 使用send代替write，添加MSG_NOSIGNAL避免SIGPIPE
-                    ssize_t sent = send(clientFd, 
-                                       response.responseText.data() + response.bytesSent, 
-                                       toWrite, 
-                                       MSG_NOSIGNAL);
-                    
-                    if (sent > 0) {
-                        response.bytesSent += sent;
-                        // 检查是否全部发送完毕
-                        if (response.bytesSent >= response.responseText.size()) {
-                            response.writePending = false;
-                            return true;
-                        }
-                    } else if (sent == 0) {
-                        // 连接已关闭
-                        throw std::runtime_error("Connection closed");
-                    } else if (sent == -1) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            // 写缓冲区已满，需要等待
-                            return false;
-                        } else if (errno == EPIPE || errno == ECONNRESET) {
-                            // 连接已被客户端关闭
-                            throw std::runtime_error("连接被客户端关闭");
-                        } else {
-                            // 其他错误
-                            throw std::runtime_error("write error: " + std::string(strerror(errno)));
-                        }
-                    }
-                } catch (const std::exception& e) {
-                    // 出现错误，结束写入尝试
+            constexpr size_t MAX_WRITE_SIZE = 65536; // 64KB
+            size_t remaining = response.responseText.size() - response.bytesSent;
+            size_t toWrite = std::min(remaining, MAX_WRITE_SIZE);
+            
+            // 使用send代替write，添加MSG_NOSIGNAL避免SIGPIPE
+            ssize_t sent = send(clientFd, 
+                                response.responseText.data() + response.bytesSent, 
+                                toWrite, 
+                                MSG_NOSIGNAL);
+            
+            if (sent > 0) {
+                response.bytesSent += sent;
+                // 检查是否全部发送完毕
+                if (response.bytesSent >= response.responseText.size()) {
                     response.writePending = false;
-                    throw; // 重新抛出异常
+                    return true;
+                }
+            } else if (sent == 0) {
+                // 连接已关闭
+                throw std::runtime_error("Connection closed");
+            } else if (sent == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // 写缓冲区已满，需要等待
+                    return false;
+                } else if (errno == EPIPE || errno == ECONNRESET) {
+                    // 连接已被客户端关闭
+                    throw std::runtime_error("连接被客户端关闭");
+                } else {
+                    // 其他错误
+                    throw std::runtime_error("write error: " + std::string(strerror(errno)));
                 }
             }
-            
-            return true; // 写入完成
+        return true; // 写入完成
         }
     };
 };

@@ -1,5 +1,6 @@
 #pragma once
 #include "SocketAddressStorage.hpp"
+#include <cmath>
 #include <coroutine>
 #include <fmt/format.h>
 #include <sys/epoll.h>
@@ -58,12 +59,26 @@ class AcceptAwaiter {
 private:
     int serverFd;
     int epollFd;
+    int clientFd = -1; // 客户端文件描述符
 
 public:
     AcceptAwaiter(int serverFd, int epollFd) : serverFd(serverFd), epollFd(epollFd) {}
-
-    bool await_ready() const noexcept {
-        // 尝试非阻塞 accept，如果立即成功则返回 true
+    bool await_ready() {
+        // 尝试立即接受连接
+        SocketAddressStorage clientAddr;
+        clientFd = ::accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
+        
+        if (clientFd != -1) {
+            // 成功接受连接，不需要挂起
+            return true;
+        }
+        
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            // 发生真正的错误
+            throw std::runtime_error(fmt::format("accept failed: {}", strerror(errno)));
+        }
+        
+        // 没有连接可接受，需要挂起
         return false;
     }
 
@@ -86,17 +101,22 @@ public:
     }
 
     int await_resume() {
-        SocketAddressStorage clientAddr;
+        if (clientFd != -1) {
+            // 如果在await_ready中已经接受了连接，直接返回
+            return clientFd;
+        }
         
-        int clientFd = accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
+        // 否则尝试再次接受连接
+        SocketAddressStorage clientAddr;
+        clientFd = ::accept(serverFd, clientAddr.get_addr(), &clientAddr.get_length());
+        
         if (clientFd == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 throw std::runtime_error(fmt::format("accept failed: {}", strerror(errno)));
             }
-            return -1;  // 没有新连接
+            return -1;  // 仍然没有连接可接受
         }
-        
-        return clientFd;  // 返回新客户端连接的文件描述符
+        return clientFd;
     }
 };
 

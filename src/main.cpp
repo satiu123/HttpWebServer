@@ -94,9 +94,9 @@ void closeConnection(int fd,int epollFd) {
 Task acceptConnection(int serverFd, int epollFd) {
     while(true){
         int clientFd = co_await AcceptAwaiter(serverFd, epollFd);
-        if (clientFd == -1) {
-            continue;
-        }
+        // if (clientFd == -1) {
+        //     continue;
+        // }
         try{
             // 设置为非阻塞
             setNonBlocking(clientFd);
@@ -119,7 +119,7 @@ Task acceptConnection(int serverFd, int epollFd) {
 }
 //事件循环
 void eventLoop(int epollFd) {
-    const int MAX_EVENTS = 64;
+    const int MAX_EVENTS = 10;
     struct epoll_event events[MAX_EVENTS];
     while (true) {
         int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
