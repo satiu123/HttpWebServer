@@ -97,4 +97,4 @@ public:
 };
 
 // 声明外部变量，在main.cpp中定义
-extern std::unordered_map<int, std::shared_ptr<Connection>> connections;
+// extern std::unordered_map<int, std::shared_ptr<Connection>> connections;

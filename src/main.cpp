@@ -4,7 +4,6 @@
 #include <fmt/format.h>
 #include <string>
 #include <cstring>
-#include <unordered_map>
 #include <memory>
 #include <cerrno>
 
@@ -13,9 +12,7 @@
 #include "network/AddrInfoWrapper.hpp"
 #include "network/SocketWrapper.hpp"
 #include "core/Connection.hpp"
-
-// 存储所有活动连接
-std::unordered_map<int, std::shared_ptr<Connection>> connections;
+#include "src/core/ConnectionManager.hpp"
 
 // 初始化连接协程
 Task g_acceptTask=nullptr;
@@ -81,7 +78,7 @@ SocketWrapper initializeServer(const char* host, const char* port) {
 
 // 关闭连接
 void closeConnection(int fd,int epollFd) {
-    connections.erase(fd);
+    ConnectionManager::getInstance().removeConnection(fd);
     close(fd);
     struct epoll_event ev;
     ev.events = EPOLL_CTL_DEL;
@@ -94,9 +91,9 @@ void closeConnection(int fd,int epollFd) {
 Task acceptConnection(int serverFd, int epollFd) {
     while(true){
         int clientFd = co_await AcceptAwaiter(serverFd, epollFd);
-        // if (clientFd == -1) {
-        //     continue;
-        // }
+        if (clientFd == -1) {
+            continue;
+        }
         try{
             // 设置为非阻塞
             setNonBlocking(clientFd);
