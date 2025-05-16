@@ -50,6 +50,19 @@ public:
     size_t count() const {
         return connections.size();
     }
+    
+    // 获取活动连接数的别名，使方法名更清晰
+    size_t getActiveConnectionCount() const {
+        return connections.size();
+    }
+    
+    // 关闭所有连接
+    void closeAllConnections() {
+        auto connectionsCopy = connections; // 创建副本以避免迭代器失效
+        for (const auto& pair : connectionsCopy) {
+            removeConnection(pair.first);
+        }
+    }
 
 private:
     std::vector<std::function<void()>> pendingTasks;

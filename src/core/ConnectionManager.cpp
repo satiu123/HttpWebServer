@@ -1,4 +1,5 @@
 #include "ConnectionManager.hpp"
+#include "../utils/PerformanceMonitor.hpp"
 #include "Connection.hpp"
 
 // 初始化静态实例

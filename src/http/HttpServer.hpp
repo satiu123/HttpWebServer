@@ -1,5 +1,8 @@
 #pragma once
-#include "HttpParser.hpp"
+#include "RequestParser.hpp"
+#include "FileService.hpp"
+#include "../core/Logger.hpp"
+#include "../core/Config.hpp"
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -13,16 +16,37 @@
 #include <sys/epoll.h>
 #include <vector>
 
+// HTTP状态码和描述映射
+const std::unordered_map<std::string, std::string> HTTP_STATUS_CODES = {
+    {"200", "OK"},
+    {"201", "Created"},
+    {"204", "No Content"},
+    {"301", "Moved Permanently"},
+    {"302", "Found"},
+    {"304", "Not Modified"},
+    {"400", "Bad Request"},
+    {"401", "Unauthorized"},
+    {"403", "Forbidden"},
+    {"404", "Not Found"},
+    {"405", "Method Not Allowed"},
+    {"500", "Internal Server Error"},
+    {"501", "Not Implemented"},
+    {"502", "Bad Gateway"},
+    {"503", "Service Unavailable"}
+};
+
 class HttpServer {
 public:
     HttpServer() = default;
     ~HttpServer() = default;
+    
     class HttpRequest {
     private:
         RequestParser parser;
         std::unordered_map<std::string, std::string> queryParams;
+        
         void parseQueryParams() {
-            std::string url = parser.url();
+            std::string url = parser.getUrl();
             size_t pos = url.find('?');
             if (pos != std::string::npos) {
                 std::string query = url.substr(pos + 1);
@@ -51,12 +75,14 @@ public:
         HttpRequest() = default;
         ~HttpRequest() = default;
         bool readComplete = false;
+        
         void reset() {
             parser.reset();
             queryParams.clear();
             readComplete = false;
         }
-        // 新增读取方法，返回是否读取完成
+        
+        // 读取方法，返回是否读取完成
         bool read(int fd, std::vector<char>& buffer) {
             if (readComplete) {
                 return true;
@@ -71,6 +97,7 @@ public:
                 // 如果请求解析完成
                 if (isComplete()) {
                     readComplete = true;
+                    LOG_INFO(fmt::format("完成解析HTTP请求: {} {}", method(), path()));
                     return true;
                 }
                 
@@ -102,34 +129,31 @@ public:
         }
         
         std::string method() const {
-            return parser.method();
+            return parser.getMethod();
         }
         
         std::string url() const {
-            return parser.url();
+            return parser.getUrl();
         }
         
         std::string path() const {
-            std::string url = parser.url();
-            size_t pos = url.find('?');
-            return (pos != std::string::npos) ? url.substr(0, pos) : url;
+            return parser.getPath();
         }
         
         std::string version() const {
-            return parser.version();
+            return parser.getHttpVersion();
         }
         
         std::string getHeader(const std::string& key) const {
-            auto it = parser.headerMap.find(key);
-            return (it != parser.headerMap.end()) ? it->second : "";
+            return parser.getHeader(key);
         }
         
         const std::unordered_map<std::string, std::string>& headers() const {
-            return parser.headerMap;
+            return parser.getHeaders();
         }
         
-        std::string&& body()  {
-            return std::move(parser.body);
+        std::string body() const {
+            return parser.getBody();
         }
         
         std::string getParam(const std::string& key) const {
@@ -200,8 +224,8 @@ public:
             headers[key] = value;
         }
         
-        void setBody(const std::string&& body) {
-            responseBody = std::move(body);
+        void setBody(const std::string& body) {
+            responseBody = body;
             headers["Content-Length"] = std::to_string(responseBody.length());
         }
         

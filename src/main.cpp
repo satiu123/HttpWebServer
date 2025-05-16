@@ -6,6 +6,8 @@
 #include <cstring>
 #include <memory>
 #include <cerrno>
+#include <csignal>
+#include <atomic>
 
 #include "network/AsyncIO.hpp"
 #include "network/NetworkOperation.hpp"
@@ -16,6 +18,17 @@
 
 // 初始化连接协程
 Task g_acceptTask=nullptr;
+
+// 全局变量，用于控制服务器运行状态
+std::atomic<bool> g_serverRunning = true;
+
+// 信号处理函数
+void signalHandler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        LOG_INFO(fmt::format("接收到信号 {}, 准备关闭服务器...", signum));
+        g_serverRunning = false;
+    }
+}
 
 
 // 设置非阻塞套接字
@@ -48,7 +61,8 @@ SocketWrapper initializeServer(const char* host, const char* port) {
     
     // 使用RAII封装获取地址信息
     AddrInfoWrapper addrInfo(host, port, &hints);
-    fmt::print("getaddrinfo succeeded\n");
+    // fmt::print("getaddrinfo succeeded\n");
+    LOG_INFO("getaddrinfo succeeded");
     
     // 创建socket
     SocketWrapper sock(
@@ -56,7 +70,8 @@ SocketWrapper initializeServer(const char* host, const char* port) {
         addrInfo.get()->ai_socktype,
         addrInfo.get()->ai_protocol
     );
-    fmt::print("Socket created with fd: {}\n", sock.get());
+    // fmt::print("Socket created with fd: {}\n", sock.get());
+    LOG_INFO(fmt::format("Socket created with fd: {}", sock.get()));
     int reuseaddr = 1;
     if (setsockopt(sock.get(), SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) == -1) {
         throw std::runtime_error("setsockopt failed");
@@ -72,7 +87,8 @@ SocketWrapper initializeServer(const char* host, const char* port) {
         listen(sock.get(), SOMAXCONN),
         "listen"
     );
-    fmt::print("Socket bound and listening on {}:{}\n", host, port);
+    // fmt::print("Socket bound and listening on {}:{}\n", host, port);
+    LOG_INFO(fmt::format("Socket bound and listening on {}:{}", host, port));
     return sock;
 }
 
@@ -118,10 +134,14 @@ Task acceptConnection(int serverFd, int epollFd) {
 void eventLoop(int epollFd) {
     const int MAX_EVENTS = 10;
     struct epoll_event events[MAX_EVENTS];
-    while (true) {
-        int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
+    
+    // 设置超时，以便定期检查服务器是否应该关闭
+    const int TIMEOUT_MS = 100; // 100ms超时，平衡响应性和CPU使用率
+    
+    while (g_serverRunning) {
+        int nfds = epoll_wait(epollFd, events, MAX_EVENTS, TIMEOUT_MS);
         if (nfds == -1) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) continue; // 信号中断，继续
             throw std::runtime_error("epoll_wait failed");
         }
         
@@ -133,36 +153,104 @@ void eventLoop(int epollFd) {
             }
         }
     }
+    
+    // 优雅关闭程序
+    LOG_INFO("开始进行服务器关闭...");
+    
+    // 1. 停止接受新连接 (g_acceptTask会在下一次co_await时自动结束)
+    // 2. 记录现有活动连接数
+    size_t activeConnections = ConnectionManager::getInstance().getActiveConnectionCount();
+    LOG_INFO(fmt::format("当前活动连接数: {}", activeConnections));
+    
+    // 3. 给所有连接一定时间完成当前请求
+    const int GRACEFUL_TIMEOUT_SEC = 3;
+    LOG_INFO(fmt::format("等待 {} 秒让现有连接完成...", GRACEFUL_TIMEOUT_SEC));
+    
+    // 等待一段时间或者直到所有连接都关闭
+    time_t startTime = time(nullptr);
+    while (ConnectionManager::getInstance().getActiveConnectionCount() > 0) {
+        // 检查是否超时
+        if (difftime(time(nullptr), startTime) > GRACEFUL_TIMEOUT_SEC) {
+            LOG_WARNING("优雅关闭超时，强制关闭剩余连接");
+            ConnectionManager::getInstance().closeAllConnections();
+            break;
+        }
+        
+        // 短暂睡眠，减少CPU使用率
+        usleep(100000); // 100ms
+    }
+    
+    LOG_INFO("所有连接已关闭，服务器关闭完成");
 }
-void runServer() {
+void runServer(const std::string& host, const std::string& port, const std::string& rootDir) {
     // 初始化服务器
-    SocketWrapper serverSocket = initializeServer("127.0.0.1", "8080");
+    LOG_INFO(fmt::format("初始化服务器 {}:{}", host, port));
+    SocketWrapper serverSocket = initializeServer(host.c_str(), port.c_str());
     setNonBlocking(serverSocket.get());
+    
+    // 初始化文件服务
+    LOG_INFO(fmt::format("初始化文件服务，根目录: {}", rootDir));
+    if (!FileService::getInstance().init(rootDir)) {
+        LOG_FATAL("文件服务初始化失败");
+        throw std::runtime_error("文件服务初始化失败");
+    }
     
     // 创建 epoll 实例
     int epollFd = createEpoll();
+    LOG_INFO("创建epoll实例成功");
     
     // 创建accept协程任务
     g_acceptTask = acceptConnection(serverSocket.get(), epollFd);
+    LOG_INFO("创建accept协程任务成功");
     
     // 开始事件循环
+    LOG_INFO("开始事件循环");
     eventLoop(epollFd);
 
     // 关闭服务器
     close(epollFd);
     close(serverSocket.get());
 }
+
 int main() {
     try {
+        // 设置信号处理
+        signal(SIGINT, signalHandler);  // 处理Ctrl+C
+        signal(SIGTERM, signalHandler); // 处理terminate信号
+        
         // 设置中文
         setlocale(LC_ALL, "zh_CN.UTF-8");
         
+        // 加载配置文件
+        if (!Config::getInstance().loadFromFile("server.conf")) {
+            fmt::print("警告: 无法加载配置文件，将使用默认配置\n");
+        }
+        
+        // 初始化日志
+        std::string logFile = Config::getInstance().getString("log_file", "server.log");
+        std::string logLevelStr = Config::getInstance().getString("log_level", "info");
+        
+        LogLevel logLevel = LogLevel::INFO;
+        if (logLevelStr == "debug") logLevel = LogLevel::DEBUG;
+        else if (logLevelStr == "info") logLevel = LogLevel::INFO;
+        else if (logLevelStr == "warning") logLevel = LogLevel::WARNING;
+        else if (logLevelStr == "error") logLevel = LogLevel::ERROR;
+        else if (logLevelStr == "fatal") logLevel = LogLevel::FATAL;
+        
+        if (!Logger::getInstance().init(logFile, logLevel)) {
+            fmt::print("警告: 无法初始化日志系统，日志将只输出到控制台\n");
+        }
+        
+        // 获取服务器配置
+        std::string host = Config::getInstance().getString("host", "127.0.0.1");
+        std::string port = Config::getInstance().getString("port", "8080");
+        std::string rootDir = Config::getInstance().getString("root_dir", "./www");
+        
         // 启动服务器
-        fmt::print("服务器正在启动...\n");
-        runServer();
-        
-        
+        LOG_INFO("服务器正在启动...");
+        runServer(host, port, rootDir);
     } catch (const std::exception& e) {
+        LOG_FATAL(fmt::format("服务器启动失败: {}", e.what()));
         fmt::print("错误: {}\n", e.what());
         return EXIT_FAILURE;
     }

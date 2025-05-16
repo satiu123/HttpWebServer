@@ -3,3 +3,4 @@ perf.data
 perf.data.old
 src/index.html
 test
+server.log
