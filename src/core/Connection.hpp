@@ -38,7 +38,7 @@ public:
     Task handleConnection(int epollFd) {
         try {
             // 记录连接
-            // PerformanceMonitor::getInstance().connectionEstablished();
+            PerformanceMonitor::getInstance().connectionEstablished();
             
             while (true) {  // 循环处理请求
                 // 重置状态
@@ -74,7 +74,7 @@ public:
                     std::chrono::high_resolution_clock::now().time_since_epoch().count());
                 
                 // 开始性能监控
-                // PerformanceMonitor::getInstance().startRequest(requestId, method, path);
+                PerformanceMonitor::getInstance().startRequest(requestId, method, path);
                 
                 // 根据HTTP方法处理请求
                 std::string statusCode = "200"; // 默认状态码
@@ -85,7 +85,7 @@ public:
                         // 显示服务器状态
                         response.setStatus("200", "OK");
                         response.setContentType("text/plain; charset=UTF-8");
-                        // response.setBody(PerformanceMonitor::getInstance().getStatsSummary());
+                        response.setBody(PerformanceMonitor::getInstance().getStatsSummary());
                     } else if (path == "/server-info") {
                         // 服务器信息
                         std::string info = "C++20 HTTP服务器\n";
@@ -99,12 +99,6 @@ public:
                         response.setContentType("text/plain; charset=UTF-8");
                         response.setBody(info);
                     } else if (method == "GET" || method == "HEAD") {
-                        // 处理根路径，自动使用index.html
-                        if (path == "/" || path.empty()) {
-                            path = "/index.html";
-                            LOG_DEBUG(fmt::format("根路径请求，尝试使用index.html"));
-                        }
-                        
                         // 静态文件服务
                         auto [fileStatusCode, content] = FileService::getInstance().getFileContent(path);
                         statusCode = fileStatusCode; // 更新状态码
@@ -159,12 +153,12 @@ public:
                     co_await HttpServer::HttpResponseAwaiter(response, fd, epollFd);
                     
                     // 更新性能监控
-                    // PerformanceMonitor::getInstance().endRequest(requestId, std::stoi(statusCode));
+                    PerformanceMonitor::getInstance().endRequest(requestId, std::stoi(statusCode));
                 } catch (const std::exception& e) {
                     LOG_ERROR(fmt::format("响应发送错误: {}", e.what()));
                     
                     // 更新性能监控（失败状态）
-                    // PerformanceMonitor::getInstance().endRequest(requestId, 500);
+                    PerformanceMonitor::getInstance().endRequest(requestId, 500);
                     break;  // 出错时退出循环
                 }
                 
