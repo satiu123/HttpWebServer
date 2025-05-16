@@ -15,6 +15,7 @@
 #include "network/SocketWrapper.hpp"
 #include "core/Connection.hpp"
 #include "src/core/ConnectionManager.hpp"
+#include "utils/PerformanceMonitor.hpp"
 
 // 初始化连接协程
 Task g_acceptTask=nullptr;
@@ -226,9 +227,11 @@ int main() {
             fmt::print("警告: 无法加载配置文件，将使用默认配置\n");
         }
         
-        // 初始化日志
+        // 读取日志配置
         std::string logFile = Config::getInstance().getString("log_file", "server.log");
         std::string logLevelStr = Config::getInstance().getString("log_level", "info");
+        bool enableLogging = Config::getInstance().getBool("enable_logging", true);
+        bool enableConsoleOutput = Config::getInstance().getBool("enable_console_output", true);
         
         LogLevel logLevel = LogLevel::INFO;
         if (logLevelStr == "debug") logLevel = LogLevel::DEBUG;
@@ -237,9 +240,16 @@ int main() {
         else if (logLevelStr == "error") logLevel = LogLevel::ERROR;
         else if (logLevelStr == "fatal") logLevel = LogLevel::FATAL;
         
-        if (!Logger::getInstance().init(logFile, logLevel)) {
-            fmt::print("警告: 无法初始化日志系统，日志将只输出到控制台\n");
+        // 初始化日志系统
+        if (!Logger::getInstance().init(logFile, logLevel, enableLogging, enableConsoleOutput)) {
+            if (enableConsoleOutput) {
+                fmt::print("警告: 无法初始化日志系统，日志将只输出到控制台\n");
+            }
         }
+        
+        // 设置性能监控
+        bool enablePerformanceMonitoring = Config::getInstance().getBool("enable_performance_monitoring", false);
+        PerformanceMonitor::getInstance().setEnabled(enablePerformanceMonitoring);
         
         // 获取服务器配置
         std::string host = Config::getInstance().getString("host", "127.0.0.1");

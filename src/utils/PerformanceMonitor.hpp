@@ -14,9 +14,21 @@ public:
         static PerformanceMonitor instance;
         return instance;
     }
+    
+    // 设置是否启用性能监控
+    void setEnabled(bool enabled) {
+        this->enabled = enabled;
+    }
+    
+    // 获取是否启用性能监控
+    bool isEnabled() const {
+        return enabled;
+    }
 
     // 开始一个请求的计时
     void startRequest(const std::string& requestId, const std::string& method, const std::string& path) {
+        if (!enabled) return;
+        
         std::lock_guard<std::mutex> lock(mutex);
         auto now = std::chrono::high_resolution_clock::now();
         requests[requestId] = {method, path, now, {}};
@@ -26,6 +38,8 @@ public:
 
     // 结束一个请求的计时并更新统计信息
     void endRequest(const std::string& requestId, int statusCode) {
+        if (!enabled) return;
+        
         std::lock_guard<std::mutex> lock(mutex);
         auto now = std::chrono::high_resolution_clock::now();
         
@@ -69,12 +83,16 @@ public:
 
     // 记录连接建立
     void connectionEstablished() {
+        if (!enabled) return;
+        
         activeConnections++;
         totalConnections++;
     }
 
     // 记录连接关闭
     void connectionClosed() {
+        if (!enabled) return;
+        
         if (activeConnections > 0) {
             activeConnections--;
         }
@@ -82,6 +100,8 @@ public:
 
     // 获取性能统计摘要
     std::string getStatsSummary() const {
+        if (!enabled) return "性能监控已禁用";
+        
         std::lock_guard<std::mutex> lock(mutex);
         
         return fmt::format(
@@ -147,6 +167,7 @@ private:
     double minProcessingTime;
     double maxProcessingTime;
     double slowThreshold;
+    bool enabled = false;  // 是否启用性能监控
 
     // 禁止复制和移动
     PerformanceMonitor(const PerformanceMonitor&) = delete;

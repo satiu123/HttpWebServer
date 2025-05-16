@@ -23,11 +23,24 @@ public:
     }
 
     // 初始化日志系统
-    bool init(const std::string& logFilePath, LogLevel minLevel = LogLevel::INFO) {
+    bool init(const std::string& logFilePath, LogLevel minLevel = LogLevel::INFO, bool enableLogging = true, bool enableConsoleOutput = true) {
         std::lock_guard<std::mutex> lock(mutex);
+        
+        // 设置是否启用日志和控制台输出
+        this->enableLogging = enableLogging;
+        this->enableConsoleOutput = enableConsoleOutput;
+        
+        // 如果不启用日志，则直接返回
+        if (!enableLogging) {
+            isInitialized = false;
+            return true;
+        }
+        
         logFile.open(logFilePath, std::ios::app);
         if (!logFile.is_open()) {
-            fmt::print(stderr, "无法打开日志文件: {}\n", logFilePath);
+            if (enableConsoleOutput) {
+                fmt::print(stderr, "无法打开日志文件: {}\n", logFilePath);
+            }
             return false;
         }
 
@@ -38,7 +51,7 @@ public:
 
     // 写入日志
     void log(LogLevel level, const std::string& message, const char* file = "", int line = 0) {
-        if (!isInitialized || level < minLogLevel) {
+        if (!isInitialized || level < minLogLevel || !enableLogging) {
             return;
         }
 
@@ -58,11 +71,13 @@ public:
         logFile << logEntry;
         logFile.flush();
         
-        // 同时输出到控制台
-        if (level >= LogLevel::WARNING) {
-            fmt::print(stderr, "{}", logEntry);
-        } else {
-            fmt::print("{}", logEntry);
+        // 根据配置决定是否输出到控制台
+        if (enableConsoleOutput) {
+            if (level >= LogLevel::WARNING) {
+                fmt::print(stderr, "{}", logEntry);
+            } else {
+                fmt::print("{}", logEntry);
+            }
         }
     }
 
@@ -140,6 +155,8 @@ private:
     std::ofstream logFile;
     bool isInitialized;
     LogLevel minLogLevel;
+    bool enableLogging{true};      // 是否启用日志记录
+    bool enableConsoleOutput{true}; // 是否在控制台输出
 };
 
 // 宏简化日志调用

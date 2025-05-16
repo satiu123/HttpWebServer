@@ -1,6 +1,5 @@
 #pragma once
 #include "SocketAddressStorage.hpp"
-#include <cmath>
 #include <coroutine>
 #include <fmt/format.h>
 #include <sys/epoll.h>
