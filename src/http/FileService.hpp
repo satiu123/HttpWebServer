@@ -71,7 +71,16 @@ public:
     }
 
     // 根据请求路径获取文件内容
-    std::pair<std::string, std::string> getFileContent(const std::string& requestPath) {
+    struct FileResponse {
+        std::string statusCode;
+        std::string content;
+        std::string mimeType;
+        
+        FileResponse(std::string status, std::string content = "", std::string mime = "")
+            : statusCode(std::move(status)), content(std::move(content)), mimeType(std::move(mime)) {}
+    };
+    
+    FileResponse getFileContent(const std::string& requestPath) {
         // 处理路径，防止路径遍历攻击
         std::string path = sanitizePath(requestPath);
         
@@ -87,58 +96,60 @@ public:
         auto cachedContent = getCachedContent(fullPath);
         if (cachedContent.has_value()) {
             const CacheEntry& entry = cachedContent.value();
-            return {"200", entry.content};
+            return {"200", entry.content, entry.mimeType};
         }
         
         // 检查路径是否存在
         if (!fs::exists(fullPath)) {
             // 文件不存在
-            return {"404", ""};
+            return {"404", "", ""};
         }
         
-        // 如果是目录，检查是否有默认文件
-        if (fs::is_directory(fullPath)) {
-            // 尝试查找默认文件
-            std::optional<std::string> indexPath = findDefaultFile(fullPath);
-            if (indexPath) {
-                fullPath = *indexPath;
-            } else {
-                // 如果仍然是目录，且配置允许列出目录
-                if (Config::getInstance().getBool("allow_directory_listing", false)) {
-                    std::string listing = generateDirectoryListing(fullPath, path);
-                    return {"200", listing};
-                } else {
-                    // 禁止访问
-                    return {"403", ""};
-                }
+        // 如果是目录且配置允许列出目录
+        if (fs::is_directory(fullPath) && Config::getInstance().getBool("allow_directory_listing", false)) {
+            // 确保请求路径以/开头
+            std::string absolutePath = path;
+            if (absolutePath.empty() || absolutePath[0] != '/') {
+                absolutePath = "/" + absolutePath;
             }
+            // 确保路径以/结尾
+            if (!absolutePath.empty() && absolutePath.back() != '/') {
+                absolutePath += '/';
+            }
+            
+            std::string listing = generateDirectoryListing(fullPath, absolutePath);
+            return {"200", listing, "text/html"};
+        } else {
+            // 禁止访问
+            return {"403", "", ""};
         }
         
         // 读取文件内容
         try {
             if (fs::is_regular_file(fullPath)) {
                 auto fileSize = fs::file_size(fullPath);
+                std::string mimeType = getMimeType(fullPath);
                 
                 // 对于超大文件，不缓存直接读取
                 if (fileSize > maxCacheFileSize) {
-                    return readLargeFile(fullPath);
+                    auto [status, content] = readLargeFile(fullPath);
+                    return {status, content, mimeType};
                 }
                 
                 // 读取文件内容并缓存
                 std::string content = readFile(fullPath, fileSize);
-                std::string mimeType = getMimeType(fullPath);
                 
                 // 缓存文件内容，如果文件不太大
                 cacheFile(fullPath, content, mimeType);
                 
-                return {"200", content};
+                return {"200", content, mimeType};
             } else {
                 // 不是文件
-                return {"404", ""};
+                return {"404", "", ""};
             }
         } catch (const std::exception& e) {
             // 服务器错误
-            return {"500", ""};
+            return {"500", "", ""};
         }
     }
     
@@ -411,11 +422,32 @@ private:
         html << "<ul>\n";
         
         // 添加返回上级目录的链接
-        if (requestPath != "/") {
-            size_t pos = requestPath.find_last_of('/', requestPath.length() - 2);
-            std::string parentDir = (pos != std::string::npos) ? 
-                                     requestPath.substr(0, pos + 1) : "/";
+        if (requestPath != "/" && requestPath != "") {
+            // 确保路径以/结尾
+            std::string normalizedPath = requestPath;
+            if (!normalizedPath.empty() && normalizedPath.back() != '/') {
+                normalizedPath += '/';
+            }
+            
+            // 移除最后一个/
+            if (normalizedPath.length() > 1) {
+                normalizedPath.pop_back();
+            }
+            
+            // 查找倒数第二个/
+            size_t pos = normalizedPath.find_last_of('/');
+            std::string parentDir = "/";
+            
+            if (pos != std::string::npos) {
+                // 确保最终路径以/结尾
+                parentDir = normalizedPath.substr(0, pos + 1);
+                if (parentDir.empty()) {
+                    parentDir = "/";
+                }
+            }
+            
             html << "<li><a href=\"" << parentDir << "\">..</a> (上级目录)</li>\n";
+            LOG_DEBUG(fmt::format("生成目录列表，当前路径：{}，父目录：{}", requestPath, parentDir));
         }
         
         // 列出所有文件和目录

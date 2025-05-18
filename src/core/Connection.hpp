@@ -100,22 +100,21 @@ public:
                         response.setBody(info);
                     } else if (method == "GET" || method == "HEAD") {
                         // 静态文件服务
-                        auto [fileStatusCode, content] = FileService::getInstance().getFileContent(path);
-                        statusCode = fileStatusCode; // 更新状态码
+                        auto fileResponse = FileService::getInstance().getFileContent(path);
+                        statusCode = fileResponse.statusCode; // 更新状态码
                         response.setStatus(statusCode, "");
                         
                         if (statusCode == "200") {
-                            // 获取MIME类型并设置Content-Type
-                            std::string mimeType = FileService::getInstance().getMimeType(path);
-                            LOG_DEBUG(fmt::format("文件 {} 的MIME类型: {}", path, mimeType));
-                            response.setContentType(mimeType);
+                            // 使用文件服务提供的MIME类型
+                            response.setContentType(fileResponse.mimeType);
+                            LOG_DEBUG(fmt::format("文件 {} 的MIME类型: {}", path, fileResponse.mimeType));
                             
                             // 如果是HEAD请求，不返回响应体
                             if (method == "GET") {
-                                response.setBody(content);
+                                response.setBody(fileResponse.content);
                             } else {
                                 // 对于HEAD请求，设置Content-Length但不发送正文
-                                response.setHeader("Content-Length", std::to_string(content.length()));
+                                response.setHeader("Content-Length", std::to_string(fileResponse.content.length()));
                             }
                         } else if (statusCode == "404") {
                             response.setContentType("text/html; charset=UTF-8");

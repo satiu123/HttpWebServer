@@ -10,6 +10,7 @@ public:
     RequestParser() : contentLength(0), headerComplete(false), complete(false) {}
 
     void reset() {
+        buffer.clear();
         method.clear();
         url.clear();
         path.clear();

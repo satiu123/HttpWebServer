@@ -155,7 +155,7 @@ void eventLoop(int epollFd) {
         }
     }
     
-    // 优雅关闭程序
+    // 关闭程序
     LOG_INFO("开始进行服务器关闭...");
     
     // 1. 停止接受新连接 (g_acceptTask会在下一次co_await时自动结束)
@@ -172,7 +172,7 @@ void eventLoop(int epollFd) {
     while (ConnectionManager::getInstance().getActiveConnectionCount() > 0) {
         // 检查是否超时
         if (difftime(time(nullptr), startTime) > GRACEFUL_TIMEOUT_SEC) {
-            LOG_WARNING("优雅关闭超时，强制关闭剩余连接");
+            LOG_WARNING("关闭超时，强制关闭剩余连接");
             ConnectionManager::getInstance().closeAllConnections();
             break;
         }

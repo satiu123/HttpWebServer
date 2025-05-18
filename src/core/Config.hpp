@@ -46,6 +46,21 @@ public:
     }
 
     // 获取字符串配置项，如果不存在则返回默认值
+    /*
+    配置项包括：
+    - host: 服务器主机名或IP地址
+    - port: 服务器端口号
+    - root_dir: 静态文件根目录
+    - log_file: 日志文件路径
+    - log_level: 日志级别（debug, info, warning, error, fatal）
+    - enable_logging: 是否启用日志
+    - enable_console_output: 是否启用控制台输出
+    - enable_performance_monitoring: 是否启用性能监控
+    - allow_directory_listing: 是否允许目录列表
+    - max_connections: 最大连接数
+    - connection_timeout: 超时时间（秒）
+
+    */
     std::string getString(const std::string& key, const std::string& defaultValue = "") const {
         auto it = configData.find(key);
         if (it != configData.end()) {
