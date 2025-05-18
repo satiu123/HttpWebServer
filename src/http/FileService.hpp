@@ -119,9 +119,6 @@ public:
             
             std::string listing = generateDirectoryListing(fullPath, absolutePath);
             return {"200", listing, "text/html"};
-        } else {
-            // 禁止访问
-            return {"403", "", ""};
         }
         
         // 读取文件内容
